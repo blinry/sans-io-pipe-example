@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 //                    \_/___________________/
 //
 
-trait Pipe<FrontInput, FrontOutput, BackInput, BackOutput> {
+trait Pipe<FrontInput, FrontOutput, BackOutput, BackInput> {
     fn handle_front_input(&mut self, message: FrontInput);
     fn handle_back_input(&mut self, message: BackInput);
     fn poll_front_output(&mut self) -> Option<FrontOutput>;
@@ -30,8 +30,8 @@ trait Pipe<FrontInput, FrontOutput, BackInput, BackOutput> {
 
 struct Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, FrontOutput, BToA, AToB>,
-    B: Pipe<AToB, BToA, BackInput, BackOutput>,
+    A: Pipe<FrontInput, FrontOutput, AToB, BToA>,
+    B: Pipe<AToB, BToA, BackOutput, BackInput>,
 {
     a: A,
     b: B,
@@ -42,8 +42,8 @@ where
 impl<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
     Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, FrontOutput, BToA, AToB>,
-    B: Pipe<AToB, BToA, BackInput, BackOutput>,
+    A: Pipe<FrontInput, FrontOutput, AToB, BToA>,
+    B: Pipe<AToB, BToA, BackOutput, BackInput>,
 {
     fn new(a: A, b: B) -> Self {
         Self {
@@ -56,11 +56,11 @@ where
 
 // When driving a glued-together pipe, forward messages between the two sub-pipes.
 impl<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
-    Pipe<FrontInput, FrontOutput, BackInput, BackOutput>
+    Pipe<FrontInput, FrontOutput, BackOutput, BackInput>
     for Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, FrontOutput, BToA, AToB>,
-    B: Pipe<AToB, BToA, BackInput, BackOutput>,
+    A: Pipe<FrontInput, FrontOutput, AToB, BToA>,
+    B: Pipe<AToB, BToA, BackOutput, BackInput>,
 {
     fn handle_front_input(&mut self, message: FrontInput) {
         self.a.handle_front_input(message);
@@ -91,14 +91,14 @@ use std::io::{Read, Write};
 #[derive(Default)]
 struct BytesToLinesPipe {
     front_input: VecDeque<u8>,
-    back_input: VecDeque<String>,
+    back_input: VecDeque<Result<String, String>>,
 }
 
-impl Pipe<Vec<u8>, Vec<u8>, String, String> for BytesToLinesPipe {
+impl Pipe<Vec<u8>, Result<Vec<u8>, Vec<u8>>, String, Result<String, String>> for BytesToLinesPipe {
     fn handle_front_input(&mut self, bytes: Vec<u8>) {
         self.front_input.extend(bytes)
     }
-    fn handle_back_input(&mut self, message: String) {
+    fn handle_back_input(&mut self, message: Result<String, String>) {
         self.back_input.push_back(message);
     }
     fn poll_back_output(&mut self) -> Option<String> {
@@ -110,12 +110,19 @@ impl Pipe<Vec<u8>, Vec<u8>, String, String> for BytesToLinesPipe {
             None
         }
     }
-    fn poll_front_output(&mut self) -> Option<Vec<u8>> {
+    fn poll_front_output(&mut self) -> Option<Result<Vec<u8>, Vec<u8>>> {
         self.back_input.pop_front().map(|message| {
-            let mut bytes = message.into_bytes();
-            // append new line
-            bytes.push(b'\n');
-            bytes
+            message
+                .map(|message| {
+                    let mut message = message.into_bytes();
+                    message.push(b'\n');
+                    message
+                })
+                .map_err(|message| {
+                    let mut message = message.into_bytes();
+                    message.push(b'\n');
+                    message
+                })
         })
     }
 }
@@ -123,15 +130,15 @@ impl Pipe<Vec<u8>, Vec<u8>, String, String> for BytesToLinesPipe {
 #[derive(Default)]
 struct StringsToNumbersPipe {
     front_input: VecDeque<String>,
-    front_output: VecDeque<String>,
+    front_output: VecDeque<Result<String, String>>,
 }
 
-impl Pipe<String, String, i32, i32> for StringsToNumbersPipe {
+impl Pipe<String, Result<String, String>, i32, i32> for StringsToNumbersPipe {
     fn handle_front_input(&mut self, message: String) {
         self.front_input.push_back(message);
     }
     fn handle_back_input(&mut self, number: i32) {
-        self.front_output.push_back(number.to_string());
+        self.front_output.push_back(Ok(number.to_string()));
     }
     fn poll_back_output(&mut self) -> Option<i32> {
         self.front_input.pop_front().and_then(|message| {
@@ -139,12 +146,12 @@ impl Pipe<String, String, i32, i32> for StringsToNumbersPipe {
                 Some(n)
             } else {
                 self.front_output
-                    .push_back(format!("Invalid number: {:?}", message));
+                    .push_back(Err(format!("Invalid number: {:?}", message)));
                 None
             }
         })
     }
-    fn poll_front_output(&mut self) -> Option<String> {
+    fn poll_front_output(&mut self) -> Option<Result<String, String>> {
         self.front_output.pop_front()
     }
 }
@@ -161,9 +168,16 @@ fn main() {
             continue;
         }
 
-        if let Some(bytes) = bytes_to_numbers_pipe.poll_front_output() {
-            std::io::stdout().write_all(&bytes).unwrap();
-            continue;
+        match bytes_to_numbers_pipe.poll_front_output() {
+            Some(Ok(bytes)) => {
+                std::io::stdout().write_all(&bytes).unwrap();
+                continue;
+            }
+            Some(Err(bytes)) => {
+                std::io::stderr().write_all(&bytes).unwrap();
+                continue;
+            }
+            None => (),
         }
 
         let buf = &mut [0; 100];
