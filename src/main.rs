@@ -158,7 +158,7 @@ impl Pipe<String, Result<String, String>, i32, i32> for StringsToNumbersPipe {
 }
 
 // We can now glue these pipes together to create a program that reads numbers from stdin,
-// processes the numbers, and sends the results to stdout.
+// processes the numbers, and sends the results to stdout. Here's a synchronous version.
 
 fn main() {
     let mut bytes_to_numbers_pipe =
@@ -189,6 +189,45 @@ fn main() {
         bytes_to_numbers_pipe.handle_front_input(buf[..n].to_vec());
     }
 }
+
+// If we wanted, we could drive the same pipe asynchronously, by using async/await and Tokio.
+// That way, it would be easy do drive more than one pipe at the same time, by tokio::select!-ing
+// multiple event sources.
+
+/*
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() {
+    let mut bytes_to_numbers_pipe =
+        Glue::new(BytesToLinesPipe::default(), StringsToNumbersPipe::default());
+
+    let mut stdin = tokio::io::stdin();
+    loop {
+        if let Some(n) = bytes_to_numbers_pipe.poll_back_output() {
+            let n = 2 * n;
+            bytes_to_numbers_pipe.handle_back_input(n);
+            continue;
+        }
+
+        match bytes_to_numbers_pipe.poll_front_output() {
+            Some(Ok(bytes)) => {
+                tokio::io::stdout().write_all(&bytes).await.unwrap();
+                continue;
+            }
+            Some(Err(bytes)) => {
+                tokio::io::stderr().write_all(&bytes).await.unwrap();
+                continue;
+            }
+            None => (),
+        }
+
+        let mut buf = vec![0; 100];
+        let n = stdin.read(&mut buf).await.unwrap();
+        bytes_to_numbers_pipe.handle_front_input(buf[..n].to_vec());
+    }
+}
+*/
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Tests are modular and fast, because they don't actually have to do IO.
