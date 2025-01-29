@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-// A pipe is a trait for sans-IO components, that represents a bidirectional communication channel.
+// A pipe is a "sans-IO" bidirectional communication channel.
 // To drive them, feed them input from both sides, and poll for output towards both sides.
 //
 // The pipes decide how to buffer and process these messages.
@@ -55,6 +55,7 @@ where
 }
 
 // When driving a glued-together pipe, forward messages between the two sub-pipes.
+
 impl<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
     Pipe<FrontInput, FrontOutput, BackOutput, BackInput>
     for Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
@@ -84,9 +85,14 @@ where
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+// As an example, let's build two pipes.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+
+// The first pipe translates between a stream of bytes and a stream of lines.
+// In the backwards direction, we differentiate between "ok" and "error" messages.
+// That way, this pipe can be attached to stdin, stdout and stderr.
 
 #[derive(Default)]
 struct BytesToLinesPipe {
@@ -111,21 +117,19 @@ impl Pipe<Vec<u8>, Result<Vec<u8>, Vec<u8>>, String, Result<String, String>> for
         }
     }
     fn poll_front_output(&mut self) -> Option<Result<Vec<u8>, Vec<u8>>> {
-        self.back_input.pop_front().map(|message| {
+        let into_bytes = |message: String| {
+            let mut message = message.into_bytes();
+            message.push(b'\n');
             message
-                .map(|message| {
-                    let mut message = message.into_bytes();
-                    message.push(b'\n');
-                    message
-                })
-                .map_err(|message| {
-                    let mut message = message.into_bytes();
-                    message.push(b'\n');
-                    message
-                })
-        })
+        };
+        self.back_input
+            .pop_front()
+            .map(|message| message.map(into_bytes).map_err(into_bytes))
     }
 }
+
+// The second pipe converts string to numbers, and the other way around.
+// When fed a string that's not a number, it returns an error.
 
 #[derive(Default)]
 struct StringsToNumbersPipe {
@@ -152,6 +156,9 @@ impl Pipe<String, Result<String, String>, i32, i32> for StringsToNumbersPipe {
         self.front_output.pop_front()
     }
 }
+
+// We can now glue these pipes together to create a program that reads numbers from stdin,
+// processes the numbers, and sends the results to stdout.
 
 fn main() {
     let mut bytes_to_numbers_pipe =
@@ -184,7 +191,7 @@ fn main() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// unit tests
+// Tests are modular and fast, because they don't actually have to do IO.
 
 #[cfg(test)]
 mod tests {
@@ -194,10 +201,12 @@ mod tests {
     fn test_bytes_to_lines_pipe() {
         let mut pipe = BytesToLinesPipe::default();
 
-        pipe.handle_front_input(b"hello\nworld\n!".to_vec());
+        pipe.handle_front_input(b"hello\nworld".to_vec());
         assert_eq!(pipe.poll_back_output(), Some("hello".to_string()));
-        assert_eq!(pipe.poll_back_output(), Some("world".to_string()));
         assert_eq!(pipe.poll_back_output(), None);
+
+        pipe.handle_front_input(b"\n".to_vec());
+        assert_eq!(pipe.poll_back_output(), Some("world".to_string()));
 
         pipe.handle_back_input(Ok("hello".to_string()));
         assert_eq!(pipe.poll_front_output(), Some(Ok(b"hello\n".to_vec())));
@@ -217,9 +226,11 @@ mod tests {
         assert_eq!(pipe.poll_back_output(), None);
 
         pipe.handle_front_input("hello".to_string());
+        // An error at the front.
         let front_output = pipe.poll_front_output();
         assert!(front_output.is_some());
         assert!(front_output.unwrap().is_err());
+        // No output at the back.
         let back_output = pipe.poll_back_output();
         assert!(back_output.is_none());
     }
