@@ -3,52 +3,53 @@ use std::marker::PhantomData;
 
 // A pipe is a trait for sans-IO components, that represents a bidirectional communication channel.
 // To drive them, feed them input from both sides, and poll for output towards both sides.
+//
 // The pipes decide how to buffer and process these messages.
-//                   _____________________
-//                  / \                   \
-// InputFromIO --> |   |                   | --> OutputFromIO
-//                 |   |      P I P E      |
-//  OutputToIO <-- |   |                   | <-- InputToIO
-//                  \_/___________________/
+//                     _____________________
+//                    / \                   \
+//   FrontInput ---> |   |                   | ---> BackOutput
+//                   |   |      P I P E      |
+//  FrontOutput <--- |   |                   | <--- BackInput
+//                    \_/___________________/
 //
 
-trait Pipe<InputFromIO, InputToIO, OutputFromIO, OutputToIO> {
-    fn handle_input_from_io(&mut self, message: InputFromIO);
-    fn handle_input_to_io(&mut self, message: InputToIO);
-    fn poll_transmit_from_io(&mut self) -> Option<OutputFromIO>;
-    fn poll_transmit_to_io(&mut self) -> Option<OutputToIO>;
+trait Pipe<FrontInput, BackInput, BackOutput, FrontOutput> {
+    fn handle_front_input(&mut self, message: FrontInput);
+    fn handle_back_input(&mut self, message: BackInput);
+    fn poll_front_output(&mut self) -> Option<FrontOutput>;
+    fn poll_back_output(&mut self) -> Option<BackOutput>;
 }
 
-//                   _____________________ _____________________
-//                  / \                   \g\                   \
-// InputFromIO --> |   |                   |l|                   | --> OutputFromIO
-//                 |   |         A         |u|         B         |
-//  OutputToIO <-- |   |                   |e|                   | <-- InputToIO
-//                  \_/___________________/!/___________________/
+//                     _____________________ _____________________
+//                    / \                   \g\                   \
+//   FrontInput ---> |   |                   |l|                   | ---> BackOutput
+//                   |   |         A         |u|         B         |
+//  FrontOutput <--- |   |                   |e|                   | <--- BackInput
+//                    \_/___________________/!/___________________/
 //
 
-struct Glue<A, B, InputFromIO, InputToIO, InputToA, OutputFromIO, OutputToIO, OutputFromA>
+struct Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
 where
-    A: Pipe<InputFromIO, InputToA, OutputFromA, OutputToIO>,
-    B: Pipe<OutputFromA, InputToIO, OutputFromIO, InputToA>,
+    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
+    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
 {
     a: A,
     b: B,
     _marker: PhantomData<(
-        InputFromIO,
-        InputToIO,
+        FrontInput,
+        BackInput,
         InputToA,
-        OutputFromIO,
-        OutputToIO,
+        BackOutput,
+        FrontOutput,
         OutputFromA,
     )>,
 }
 
-impl<A, B, InputFromIO, InputToIO, InputToA, OutputFromIO, OutputToIO, OutputFromA>
-    Glue<A, B, InputFromIO, InputToIO, InputToA, OutputFromIO, OutputToIO, OutputFromA>
+impl<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+    Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
 where
-    A: Pipe<InputFromIO, InputToA, OutputFromA, OutputToIO>,
-    B: Pipe<OutputFromA, InputToIO, OutputFromIO, InputToA>,
+    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
+    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
 {
     fn new(a: A, b: B) -> Self {
         Self {
@@ -59,31 +60,31 @@ where
     }
 }
 
-impl<A, B, InputFromIO, InputToIO, InputToA, OutputFromIO, OutputToIO, OutputFromA>
-    Pipe<InputFromIO, InputToIO, OutputFromIO, OutputToIO>
-    for Glue<A, B, InputFromIO, InputToIO, InputToA, OutputFromIO, OutputToIO, OutputFromA>
+impl<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+    Pipe<FrontInput, BackInput, BackOutput, FrontOutput>
+    for Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
 where
-    A: Pipe<InputFromIO, InputToA, OutputFromA, OutputToIO>,
-    B: Pipe<OutputFromA, InputToIO, OutputFromIO, InputToA>,
+    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
+    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
 {
-    fn handle_input_from_io(&mut self, message: InputFromIO) {
-        self.a.handle_input_from_io(message);
+    fn handle_front_input(&mut self, message: FrontInput) {
+        self.a.handle_front_input(message);
     }
-    fn handle_input_to_io(&mut self, message: InputToIO) {
-        self.b.handle_input_to_io(message);
+    fn handle_back_input(&mut self, message: BackInput) {
+        self.b.handle_back_input(message);
     }
-    fn poll_transmit_from_io(&mut self) -> Option<OutputFromIO> {
-        while let Some(message) = self.a.poll_transmit_from_io() {
-            self.b.handle_input_from_io(message);
+    fn poll_back_output(&mut self) -> Option<BackOutput> {
+        while let Some(message) = self.a.poll_back_output() {
+            self.b.handle_front_input(message);
         }
-        self.b.poll_transmit_from_io()
+        self.b.poll_back_output()
     }
 
-    fn poll_transmit_to_io(&mut self) -> Option<OutputToIO> {
-        while let Some(message) = self.b.poll_transmit_to_io() {
-            self.a.handle_input_to_io(message);
+    fn poll_front_output(&mut self) -> Option<FrontOutput> {
+        while let Some(message) = self.b.poll_front_output() {
+            self.a.handle_back_input(message);
         }
-        self.a.poll_transmit_to_io()
+        self.a.poll_front_output()
     }
 }
 
@@ -96,13 +97,13 @@ struct BytesToLinesPipe {
 }
 
 impl Pipe<Vec<u8>, String, String, Vec<u8>> for BytesToLinesPipe {
-    fn handle_input_from_io(&mut self, message: Vec<u8>) {
+    fn handle_front_input(&mut self, message: Vec<u8>) {
         self.input_from_io.extend(message);
     }
-    fn handle_input_to_io(&mut self, message: String) {
+    fn handle_back_input(&mut self, message: String) {
         self.input_to_io.push(message);
     }
-    fn poll_transmit_from_io(&mut self) -> Option<String> {
+    fn poll_back_output(&mut self) -> Option<String> {
         if let Some(pos) = self.input_from_io.iter().position(|&x| x == b'\n') {
             let message = self.input_from_io.drain(..pos).collect();
             self.input_from_io.drain(..1);
@@ -111,7 +112,7 @@ impl Pipe<Vec<u8>, String, String, Vec<u8>> for BytesToLinesPipe {
             None
         }
     }
-    fn poll_transmit_to_io(&mut self) -> Option<Vec<u8>> {
+    fn poll_front_output(&mut self) -> Option<Vec<u8>> {
         self.input_to_io.pop().map(|message| {
             let mut bytes = message.into_bytes();
             // append new line
@@ -128,13 +129,13 @@ struct StringToNumberPipe {
 }
 
 impl Pipe<String, i32, i32, String> for StringToNumberPipe {
-    fn handle_input_from_io(&mut self, message: String) {
+    fn handle_front_input(&mut self, message: String) {
         self.input_from_io.push(message);
     }
-    fn handle_input_to_io(&mut self, message: i32) {
+    fn handle_back_input(&mut self, message: i32) {
         self.output_to_io.push(message.to_string());
     }
-    fn poll_transmit_from_io(&mut self) -> Option<i32> {
+    fn poll_back_output(&mut self) -> Option<i32> {
         self.input_from_io.pop().and_then(|message| {
             if let Ok(n) = message.parse() {
                 Some(n)
@@ -144,7 +145,7 @@ impl Pipe<String, i32, i32, String> for StringToNumberPipe {
             }
         })
     }
-    fn poll_transmit_to_io(&mut self) -> Option<String> {
+    fn poll_front_output(&mut self) -> Option<String> {
         self.output_to_io.pop()
     }
 }
@@ -155,19 +156,19 @@ fn main() {
     let mut stdin = std::io::stdin().lock();
 
     loop {
-        if let Some(n) = bytes_to_numbers_pipe.poll_transmit_from_io() {
+        if let Some(n) = bytes_to_numbers_pipe.poll_back_output() {
             let n = 2 * n;
-            bytes_to_numbers_pipe.handle_input_to_io(n);
+            bytes_to_numbers_pipe.handle_back_input(n);
             continue;
         }
 
-        if let Some(bytes) = bytes_to_numbers_pipe.poll_transmit_to_io() {
+        if let Some(bytes) = bytes_to_numbers_pipe.poll_front_output() {
             std::io::stdout().write_all(&bytes).unwrap();
             continue;
         }
 
         let buf = &mut [0; 100];
         let n = stdin.read(buf).unwrap();
-        bytes_to_numbers_pipe.handle_input_from_io(buf[..n].to_vec());
+        bytes_to_numbers_pipe.handle_front_input(buf[..n].to_vec());
     }
 }
