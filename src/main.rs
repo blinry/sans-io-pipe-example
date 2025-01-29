@@ -1,4 +1,3 @@
-use std::io::{Read, Write};
 use std::marker::PhantomData;
 
 // A pipe is a trait for sans-IO components, that represents a bidirectional communication channel.
@@ -20,6 +19,7 @@ trait Pipe<FrontInput, BackInput, BackOutput, FrontOutput> {
     fn poll_back_output(&mut self) -> Option<BackOutput>;
 }
 
+// You can glue two pipes together if their interfaces match, creating in a new pipe.
 //                     _____________________ _____________________
 //                    / \                   \g\                   \
 //   FrontInput ---> |   |                   |l|                   | ---> BackOutput
@@ -28,28 +28,22 @@ trait Pipe<FrontInput, BackInput, BackOutput, FrontOutput> {
 //                    \_/___________________/!/___________________/
 //
 
-struct Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+struct Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
-    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
+    A: Pipe<FrontInput, BToA, AToB, FrontOutput>,
+    B: Pipe<AToB, BackInput, BackOutput, BToA>,
 {
     a: A,
     b: B,
-    _marker: PhantomData<(
-        FrontInput,
-        BackInput,
-        InputToA,
-        BackOutput,
-        FrontOutput,
-        OutputFromA,
-    )>,
+    // This marker is required to be able to use all the generic paramaters.
+    _marker: PhantomData<(FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB)>,
 }
 
-impl<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
-    Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+impl<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
+    Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
-    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
+    A: Pipe<FrontInput, BToA, AToB, FrontOutput>,
+    B: Pipe<AToB, BackInput, BackOutput, BToA>,
 {
     fn new(a: A, b: B) -> Self {
         Self {
@@ -60,12 +54,13 @@ where
     }
 }
 
-impl<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+// When driving a glued-together pipe, forward messages between the two sub-pipes.
+impl<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
     Pipe<FrontInput, BackInput, BackOutput, FrontOutput>
-    for Glue<A, B, FrontInput, BackInput, InputToA, BackOutput, FrontOutput, OutputFromA>
+    for Glue<A, B, FrontInput, BackInput, BToA, BackOutput, FrontOutput, AToB>
 where
-    A: Pipe<FrontInput, InputToA, OutputFromA, FrontOutput>,
-    B: Pipe<OutputFromA, BackInput, BackOutput, InputToA>,
+    A: Pipe<FrontInput, BToA, AToB, FrontOutput>,
+    B: Pipe<AToB, BackInput, BackOutput, BToA>,
 {
     fn handle_front_input(&mut self, message: FrontInput) {
         self.a.handle_front_input(message);
@@ -87,8 +82,6 @@ where
         self.a.poll_front_output()
     }
 }
-
-//////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Default)]
 struct BytesToLinesPipe {
@@ -149,6 +142,8 @@ impl Pipe<String, i32, i32, String> for StringToNumberPipe {
         self.output_to_io.pop()
     }
 }
+
+use std::io::{Read, Write};
 
 fn main() {
     let mut bytes_to_numbers_pipe =
