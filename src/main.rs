@@ -129,27 +129,24 @@ impl Pipe<Vec<u8>, Result<Vec<u8>, Vec<u8>>, String, Result<String, String>> for
 
 #[derive(Default)]
 struct StringsToNumbersPipe {
-    front_input: VecDeque<String>,
+    back_output: VecDeque<i32>,
     front_output: VecDeque<Result<String, String>>,
 }
 
 impl Pipe<String, Result<String, String>, i32, i32> for StringsToNumbersPipe {
     fn handle_front_input(&mut self, message: String) {
-        self.front_input.push_back(message);
+        if let Ok(n) = message.parse() {
+            self.back_output.push_back(n);
+        } else {
+            self.front_output
+                .push_back(Err(format!("Invalid number: {:?}", message)));
+        }
     }
     fn handle_back_input(&mut self, number: i32) {
         self.front_output.push_back(Ok(number.to_string()));
     }
     fn poll_back_output(&mut self) -> Option<i32> {
-        self.front_input.pop_front().and_then(|message| {
-            if let Ok(n) = message.parse() {
-                Some(n)
-            } else {
-                self.front_output
-                    .push_back(Err(format!("Invalid number: {:?}", message)));
-                None
-            }
-        })
+        self.back_output.pop_front()
     }
     fn poll_front_output(&mut self) -> Option<Result<String, String>> {
         self.front_output.pop_front()
@@ -183,5 +180,47 @@ fn main() {
         let buf = &mut [0; 100];
         let n = stdin.read(buf).unwrap();
         bytes_to_numbers_pipe.handle_front_input(buf[..n].to_vec());
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// unit tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bytes_to_lines_pipe() {
+        let mut pipe = BytesToLinesPipe::default();
+
+        pipe.handle_front_input(b"hello\nworld\n!".to_vec());
+        assert_eq!(pipe.poll_back_output(), Some("hello".to_string()));
+        assert_eq!(pipe.poll_back_output(), Some("world".to_string()));
+        assert_eq!(pipe.poll_back_output(), None);
+
+        pipe.handle_back_input(Ok("hello".to_string()));
+        assert_eq!(pipe.poll_front_output(), Some(Ok(b"hello\n".to_vec())));
+        assert_eq!(pipe.poll_front_output(), None);
+
+        pipe.handle_back_input(Err("hello".to_string()));
+        assert_eq!(pipe.poll_front_output(), Some(Err(b"hello\n".to_vec())));
+        assert_eq!(pipe.poll_front_output(), None);
+    }
+
+    #[test]
+    fn test_strings_to_numbers_pipe() {
+        let mut pipe = StringsToNumbersPipe::default();
+
+        pipe.handle_front_input("42".to_string());
+        assert_eq!(pipe.poll_back_output(), Some(42));
+        assert_eq!(pipe.poll_back_output(), None);
+
+        pipe.handle_front_input("hello".to_string());
+        let front_output = pipe.poll_front_output();
+        assert!(front_output.is_some());
+        assert!(front_output.unwrap().is_err());
+        let back_output = pipe.poll_back_output();
+        assert!(back_output.is_none());
     }
 }
